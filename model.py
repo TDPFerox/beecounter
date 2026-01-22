@@ -180,7 +180,7 @@ if __name__ == "__main__":
     model, history = train_model(
         data_folder='prepared_data',
         epochs=50,
-        batch_size=8,
+        batch_size=4,
         validation_split=0.2
     )
     
