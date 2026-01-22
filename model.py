@@ -97,7 +97,7 @@ def train_model(data_folder='prepared_data', epochs=50, batch_size=4, validation
         batch_size=batch_size,
         validation_split=validation_split,
         callbacks=[early, check],
-        verbose=1
+        verbose=2  # Kompaktere Ausgabe: nur eine Zeile pro Epoche
     )
     
     # Speichere finales Modell
