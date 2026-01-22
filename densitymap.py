@@ -5,7 +5,7 @@ H, W = 288, 512
 density = np.zeros((H, W), dtype=np.float32)
 
 
-def generate_density_map(points, height, width, sigma=4):
+def generate_density_map(points, height, width, sigma=2):
     density = np.zeros((height, width), dtype=np.float32)
 
     for x, y in points:

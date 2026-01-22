@@ -1,3 +1,5 @@
 .venv
 Wabenbilder
 test
+prepared_data
+__pycache__
