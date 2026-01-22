@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+import tensorflow as tf
 from tensorflow.keras.layers import (
     Input, Conv2D, MaxPooling2D,
     UpSampling2D, Concatenate
@@ -12,6 +13,17 @@ def conv_block(x, filters):
     x = Conv2D(filters, 3, padding="same", activation="relu")(x)
     x = Conv2D(filters, 3, padding="same", activation="relu")(x)
     return x
+
+
+def count_loss(y_true, y_pred):
+    """
+    Berechnet den absoluten Fehler zwischen der Summe der Ground Truth
+    und der Summe der Vorhersage (= Anzahl der gezählten Bienen).
+    """
+    true_count = tf.reduce_sum(y_true, axis=[1, 2, 3])
+    pred_count = tf.reduce_sum(y_pred, axis=[1, 2, 3])
+    return tf.reduce_mean(tf.abs(true_count - pred_count))
+
 
 def build_bee_counter(input_shape=(288, 512, 3)):
     inputs = Input(shape=input_shape)
@@ -81,7 +93,7 @@ def train_model(data_folder='prepared_data', epochs=50, batch_size=4, validation
     model.compile(
         optimizer="adam",
         loss="mse",
-        metrics=["mae"]
+        metrics=["mae", count_loss]
     )
     model.summary()
     
@@ -115,9 +127,9 @@ def train_model(data_folder='prepared_data', epochs=50, batch_size=4, validation
 
 def plot_training_history(history):
     """Visualisiert den Trainingsverlauf."""
-    plt.figure(figsize=(12, 4))
+    plt.figure(figsize=(15, 4))
     
-    plt.subplot(1, 2, 1)
+    plt.subplot(1, 3, 1)
     plt.plot(history.history['loss'], label='Training Loss')
     plt.plot(history.history['val_loss'], label='Validation Loss')
     plt.xlabel('Epoch')
@@ -126,13 +138,22 @@ def plot_training_history(history):
     plt.title('Training und Validation Loss')
     plt.grid(True)
     
-    plt.subplot(1, 2, 2)
+    plt.subplot(1, 3, 2)
     plt.plot(history.history['mae'], label='Training MAE')
     plt.plot(history.history['val_mae'], label='Validation MAE')
     plt.xlabel('Epoch')
     plt.ylabel('MAE')
     plt.legend()
     plt.title('Mean Absolute Error')
+    plt.grid(True)
+    
+    plt.subplot(1, 3, 3)
+    plt.plot(history.history['count_loss'], label='Training Count Loss')
+    plt.plot(history.history['val_count_loss'], label='Validation Count Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Count Loss (Anzahl Bienen)')
+    plt.legend()
+    plt.title('Count Loss (Zählfehler)')
     plt.grid(True)
     
     plt.tight_layout()
