@@ -1,7 +1,8 @@
 import os
+import glob
 import numpy as np
 import xml.etree.ElementTree as ET
-from PIL import Image
+from PIL import Image, ImageOps
 from densitymap import generate_density_map
 
 def parse_annotations(xml_path):
@@ -44,35 +45,63 @@ def resize_image_and_adjust_points(image_path, points, orig_width, orig_height,
                                    target_width=512, target_height=288):
     """
     Lädt und skaliert ein Bild auf die Zielgröße und passt die Annotationspunkte an.
-    Hochkant-Bilder werden automatisch um 90° gedreht.
+    Berücksichtigt EXIF-Orientierung und dreht nur Hochkant-Bilder.
     
     Returns:
         resized_image (PIL Image), adjusted_points (list of tuples)
     """
-    img = Image.open(image_path).convert("RGB")
+    img = Image.open(image_path)
     
-    # Prüfe ob Bild hochkant ist und drehe es ggf.
-    if orig_height > orig_width:
-        print(f"  → Drehe Hochkant-Bild um 90° (von {orig_width}x{orig_height} zu {orig_height}x{orig_width})")
+    # WICHTIG: Korrigiere zuerst die EXIF-Orientierung
+    # (Kameras/Handys speichern oft die Orientierung in EXIF-Metadaten)
+    img = ImageOps.exif_transpose(img)
+    if img is None:
+        img = Image.open(image_path)
+    img = img.convert("RGB")
+    
+    # Hole die tatsächliche Bildgröße NACH EXIF-Korrektur
+    actual_width, actual_height = img.size
+    
+    # Prüfe ob Bild TATSÄCHLICH hochkant ist (nach EXIF-Korrektur)
+    if actual_height > actual_width:
+        print(f"  → Drehe Hochkant-Bild um 90° (von {actual_width}x{actual_height} zu {actual_height}x{actual_width})")
         # Drehe Bild um 90° gegen Uhrzeigersinn (Hochkant → Querformat)
         img = img.transpose(Image.ROTATE_90)
         
+        # Berechne Skalierungsfaktor von XML-Koordinaten zu tatsächlichen Bild-Koordinaten
+        scale_x = actual_width / orig_width
+        scale_y = actual_height / orig_height
+        
         # Passe Koordinaten an die Drehung an
-        # Bei 90° gegen UZS: new_x = y, new_y = orig_width - x
+        # Zuerst auf tatsächliche Bildkoordinaten skalieren
+        # Bei 90° gegen UZS: new_x = y, new_y = actual_width - x
         rotated_points = []
         for x, y in points:
-            new_x = y
-            new_y = orig_width - x
+            # Skaliere auf tatsächliche Bildkoordinaten
+            actual_x = x * scale_x
+            actual_y = y * scale_y
+            # Drehe
+            new_x = actual_y
+            new_y = actual_width - actual_x
             rotated_points.append((new_x, new_y))
         points = rotated_points
         
         # Tausche Dimensionen nach Drehung
-        orig_width, orig_height = orig_height, orig_width
+        actual_width, actual_height = actual_height, actual_width
+    else:
+        # Keine Drehung nötig, aber Koordinaten müssen auf tatsächliche Bildgröße skaliert werden
+        scale_x = actual_width / orig_width
+        scale_y = actual_height / orig_height
+        scaled_points = []
+        for x, y in points:
+            scaled_points.append((x * scale_x, y * scale_y))
+        points = scaled_points
     
+    # Jetzt sind Bild und Punkte in der gleichen Größe (actual_width x actual_height)
     # Berechne Skalierung um Aspect Ratio beizubehalten
-    scale = min(target_width / orig_width, target_height / orig_height)
-    new_w = int(orig_width * scale)
-    new_h = int(orig_height * scale)
+    scale = min(target_width / actual_width, target_height / actual_height)
+    new_w = int(actual_width * scale)
+    new_h = int(actual_height * scale)
     
     # Resize mit beibehaltener Ratio
     resized = img.resize((new_w, new_h), Image.BILINEAR)
@@ -103,7 +132,7 @@ def prepare_training_data(xml_path, images_folder, output_folder='prepared_data'
     Hauptfunktion zur Vorbereitung der Trainingsdaten.
     
     Args:
-        xml_path: Pfad zur annotations.xml
+        xml_path: Pfad zur annotations.xml ODER Ordner mit mehreren .xml Dateien
         images_folder: Ordner mit den Originalbildern
         output_folder: Ordner für die vorbereiteten Daten
         target_width, target_height: Zielgröße der Bilder
@@ -116,10 +145,22 @@ def prepare_training_data(xml_path, images_folder, output_folder='prepared_data'
     os.makedirs(images_output, exist_ok=True)
     os.makedirs(density_output, exist_ok=True)
     
-    # Parse Annotationen
+    # Parse Annotationen (einzelne Datei oder alle XML-Dateien im Ordner)
     print("Parse Annotationen...")
-    annotations = parse_annotations(xml_path)
-    print(f"Gefunden: {len(annotations)} annotierte Bilder")
+    annotations = []
+    
+    if os.path.isdir(xml_path):
+        # Suche alle .xml Dateien im Ordner
+        xml_files = glob.glob(os.path.join(xml_path, '*.xml'))
+        print(f"Gefundene XML-Dateien: {len(xml_files)}")
+        for xml_file in xml_files:
+            print(f"  - Lese {os.path.basename(xml_file)}")
+            annotations.extend(parse_annotations(xml_file))
+    else:
+        # Einzelne XML-Datei
+        annotations = parse_annotations(xml_path)
+    
+    print(f"Gesamt: {len(annotations)} annotierte Bilder")
     
     X_images = []
     Y_density_maps = []
@@ -190,7 +231,7 @@ def prepare_training_data(xml_path, images_folder, output_folder='prepared_data'
 
 if __name__ == "__main__":
     # Pfade definieren
-    xml_path = "test/annotations.xml"
+    xml_path = "test"  # Ordner mit allen XML-Dateien (oder Pfad zu einzelner .xml)
     images_folder = "Wabenbilder"
     output_folder = "prepared_data"
     

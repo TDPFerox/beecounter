@@ -13,7 +13,7 @@ from prepare_data import prepare_training_data
 from model import train_model
 
 
-def step1_prepare_training_data(xml_path='test/annotations.xml', 
+def step1_prepare_training_data(xml_path='test', 
                                 images_folder='Wabenbilder',
                                 output_folder='prepared_data'):
     """
@@ -22,6 +22,9 @@ def step1_prepare_training_data(xml_path='test/annotations.xml',
     WICHTIG: Lädt ORIGINAL-Bilder, resized sie und passt die Koordinaten
     aus annotations.xml automatisch an. Die Koordinaten werden mit dem
     gleichen Skalierungsfaktor wie die Bilder transformiert!
+    
+    Args:
+        xml_path: Pfad zu einer einzelnen .xml Datei ODER Ordner mit mehreren .xml Dateien
     """
     print("=" * 60)
     print("STEP 1: Trainingsdaten vorbereiten")
@@ -29,7 +32,7 @@ def step1_prepare_training_data(xml_path='test/annotations.xml',
     print("(Bilder werden resized + Koordinaten angepasst)\n")
     
     if not os.path.exists(xml_path):
-        print(f"Fehler: Annotationsdatei nicht gefunden: {xml_path}")
+        print(f"Fehler: XML-Pfad nicht gefunden: {xml_path}")
         return False
     
     if not os.path.exists(images_folder):
@@ -146,8 +149,8 @@ def run_complete_workflow(skip_prepare=False, epochs=50, batch_size=4):
 if __name__ == "__main__":
     # Konfiguration
     SKIP_PREPARE = False   # Auf True setzen, wenn Daten bereits vorbereitet sind
-    EPOCHS = 50            # Anzahl Trainingsepochen
-    BATCH_SIZE = 4         # Batch-Größe (bei wenig Daten klein halten)
+    EPOCHS = 100            # Anzahl Trainingsepochen
+    BATCH_SIZE = 8         # Batch-Größe (bei wenig Daten klein halten)
     
     # Führe kompletten Workflow aus
     run_complete_workflow(

@@ -24,6 +24,17 @@ def count_loss(y_true, y_pred):
     pred_count = tf.reduce_sum(y_pred, axis=[1, 2, 3])
     return tf.reduce_mean(tf.abs(true_count - pred_count))
 
+def combined_loss(y_true, y_pred, lambda_count=0.1):
+    # Density Loss
+    density_loss = tf.reduce_mean(tf.abs(y_true - y_pred))  # L1 statt MSE
+
+    # Count Loss
+    true_count = tf.reduce_sum(y_true, axis=[1, 2, 3])
+    pred_count = tf.reduce_sum(y_pred, axis=[1, 2, 3])
+    count_loss = tf.reduce_mean(tf.abs(true_count - pred_count))
+
+    return density_loss + lambda_count * count_loss
+
 
 def build_bee_counter(input_shape=(288, 512, 3)):
     inputs = Input(shape=input_shape)
@@ -55,12 +66,12 @@ def build_bee_counter(input_shape=(288, 512, 3)):
     c6 = conv_block(u1, 32)
 
     # Output: Dichtekarte
-    output = Conv2D(1, 1, activation="linear")(c6)
+    output = Conv2D(1, 1, activation="relu")(c6)
 
     return Model(inputs, output)
 
 
-def train_model(data_folder='prepared_data', epochs=50, batch_size=4, validation_split=0.2):
+def train_model(data_folder='prepared_data', epochs=50, batch_size=4, test_split=0.15, validation_split=0.15):
     """
     Trainiert das Bienenzähler-Modell mit den vorbereiteten Daten.
     
@@ -68,7 +79,8 @@ def train_model(data_folder='prepared_data', epochs=50, batch_size=4, validation
         data_folder: Ordner mit X_train.npy und Y_train.npy
         epochs: Anzahl der Trainingsepochen
         batch_size: Batch-Größe für Training
-        validation_split: Anteil der Daten für Validierung
+        test_split: Anteil der Daten für Test-Set (Standard: 15%)
+        validation_split: Anteil der Daten für Validierung (Standard: 15%)
     """
     # Lade Trainingsdaten
     print("Lade Trainingsdaten...")
@@ -80,20 +92,45 @@ def train_model(data_folder='prepared_data', epochs=50, batch_size=4, validation
         print("Bitte führe zuerst 'prepare_data.py' aus.")
         return None
     
-    X_train = np.load(X_train_path)
-    Y_train = np.load(Y_train_path)
+    X_data = np.load(X_train_path)
+    Y_data = np.load(Y_train_path)
     
-    print(f"X_train Shape: {X_train.shape}")
-    print(f"Y_train Shape: {Y_train.shape}")
-    print(f"Anzahl Bilder: {len(X_train)}")
+    print(f"Gesamtdaten Shape: X={X_data.shape}, Y={Y_data.shape}")
+    print(f"Anzahl Bilder: {len(X_data)}")
+    
+    # Daten aufteilen: Train / Validation / Test
+    from sklearn.model_selection import train_test_split
+    
+    # Zuerst Test-Set abtrennen
+    X_train_val, X_test, Y_train_val, Y_test = train_test_split(
+        X_data, Y_data, 
+        test_size=test_split, 
+        random_state=42
+    )
+    
+    # Dann Validation-Set von verbleibenden Daten
+    val_size_adjusted = validation_split / (1 - test_split)  # Anteil vom verbleibenden Set
+    X_train, X_val, Y_train, Y_val = train_test_split(
+        X_train_val, Y_train_val,
+        test_size=val_size_adjusted,
+        random_state=42
+    )
+    
+    print(f"\n📊 Datenaufteilung:")
+    print(f"   Training:   {len(X_train)} Bilder ({len(X_train)/len(X_data)*100:.1f}%)")
+    print(f"   Validation: {len(X_val)} Bilder ({len(X_val)/len(X_data)*100:.1f}%)")
+    print(f"   Test:       {len(X_test)} Bilder ({len(X_test)/len(X_data)*100:.1f}%)")
     
     # Erstelle Modell
     print("\nErstelle Modell...")
     model = build_bee_counter()
     model.compile(
-        optimizer="adam",
-        loss="mse",
-        metrics=["mae", count_loss]
+        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
+        loss=combined_loss,
+        metrics=[
+            "mae",
+            count_loss
+        ]
     )
     model.summary()
     
@@ -101,16 +138,26 @@ def train_model(data_folder='prepared_data', epochs=50, batch_size=4, validation
     early = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True, verbose=1)
     check = ModelCheckpoint('best_model.keras', monitor='val_loss', save_best_only=True, verbose=1)
     
-    # Training
+    # Training mit explizitem Validation-Set
     print(f"\nStarte Training für {epochs} Epochen...")
     history = model.fit(
         X_train, Y_train,
         epochs=epochs,
         batch_size=batch_size,
-        validation_split=validation_split,
+        validation_data=(X_val, Y_val),  # Explizites Validation-Set
         callbacks=[early, check],
-        verbose=2  # Kompaktere Ausgabe: nur eine Zeile pro Epoche
+        verbose=2
     )
+    
+    # Finale Evaluation auf Test-Set
+    print("\n" + "="*60)
+    print("📈 FINALE EVALUATION AUF TEST-SET")
+    print("="*60)
+    test_loss, test_mae, test_count_loss = model.evaluate(X_test, Y_test, verbose=0)
+    print(f"Test Loss (MSE):     {test_loss:.4f}")
+    print(f"Test MAE:            {test_mae:.4f}")
+    print(f"Test Count Loss:     {test_count_loss:.2f} Bienen")
+    print("="*60)
     
     # Speichere finales Modell
     model.save('final_model.keras')
@@ -119,8 +166,11 @@ def train_model(data_folder='prepared_data', epochs=50, batch_size=4, validation
     # Visualisiere Training
     plot_training_history(history)
     
-    # Teste auf einigen Beispielen
-    visualize_predictions(model, X_train[:3], Y_train[:3])
+    # Teste auf Beispielen aus Test-Set
+    visualize_predictions(model, X_test[:3], Y_test[:3], prefix='test')
+    
+    # Teste auch auf Training-Beispielen zum Vergleich
+    visualize_predictions(model, X_train[:3], Y_train[:3], prefix='train')
     
     return model, history
 
@@ -162,7 +212,7 @@ def plot_training_history(history):
     print("Trainingsverlauf gespeichert als 'training_history.png'")
 
 
-def visualize_predictions(model, X_samples, Y_true):
+def visualize_predictions(model, X_samples, Y_true, prefix=''):
     """Visualisiert Vorhersagen auf Beispielbildern."""
     Y_pred = model.predict(X_samples, verbose=0)
     
@@ -186,14 +236,16 @@ def visualize_predictions(model, X_samples, Y_true):
         
         # Vorhersage Dichtekarte
         pred_count = np.sum(Y_pred[i])
+        error = abs(pred_count - true_count)
         axes[i, 2].imshow(Y_pred[i, :, :, 0], cmap='hot', interpolation='bilinear')
-        axes[i, 2].set_title(f'Vorhersage\n(~{int(pred_count)} Bienen)')
+        axes[i, 2].set_title(f'Vorhersage\n(~{int(pred_count)} Bienen, Fehler: {int(error)})')
         axes[i, 2].axis('off')
     
     plt.tight_layout()
-    plt.savefig('predictions_sample.png', dpi=150)
+    filename = f'predictions_{prefix}_sample.png' if prefix else 'predictions_sample.png'
+    plt.savefig(filename, dpi=150)
     plt.close()
-    print("Beispielvorhersagen gespeichert als 'predictions_sample.png'")
+    print(f"Beispielvorhersagen gespeichert als '{filename}'")
 
 
 if __name__ == "__main__":
@@ -202,7 +254,8 @@ if __name__ == "__main__":
         data_folder='prepared_data',
         epochs=50,
         batch_size=4,
-        validation_split=0.2
+        test_split=0.15,      # 15% für Test
+        validation_split=0.15  # 15% für Validation (=> 70% Training)
     )
     
     if model:
