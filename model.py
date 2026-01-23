@@ -36,7 +36,7 @@ def combined_loss(y_true, y_pred, lambda_count=0.1):
     return density_loss + lambda_count * count_loss
 
 
-def build_bee_counter(input_shape=(288, 512, 3)):
+def build_bee_counter(input_shape=(None, None, 3)):
     inputs = Input(shape=input_shape)
 
     # Encoder
@@ -71,7 +71,7 @@ def build_bee_counter(input_shape=(288, 512, 3)):
     return Model(inputs, output)
 
 
-def train_model(data_folder='prepared_data', epochs=50, batch_size=4, test_split=0.15, validation_split=0.15):
+def train_model(data_folder='prepared_data', epochs=50, batch_size=16, test_split=0.15, validation_split=0.15):
     """
     Trainiert das Bienenzähler-Modell mit den vorbereiteten Daten.
     
@@ -82,6 +82,15 @@ def train_model(data_folder='prepared_data', epochs=50, batch_size=4, test_split
         test_split: Anteil der Daten für Test-Set (Standard: 15%)
         validation_split: Anteil der Daten für Validierung (Standard: 15%)
     """
+    # In model.py ganz oben
+    import tensorflow as tf
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+        except RuntimeError as e:
+            print(e)
     # Lade Trainingsdaten
     print("Lade Trainingsdaten...")
     X_train_path = os.path.join(data_folder, 'X_train.npy')
