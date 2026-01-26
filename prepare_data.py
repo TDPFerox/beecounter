@@ -16,13 +16,14 @@ def parse_annotations(xml_path):
             if point.get('label') == 'Biene':
                 coords = point.get('points').split(',')
                 points.append((float(coords[0]), float(coords[1])))
-        if points:
-            annotations.append({
-                'image_name': image_name, 
-                'width': int(image.get('width')),
-                'height': int(image.get('height')), 
-                'points': points
-            })
+        
+        # NEU: Wir nehmen das Bild IMMER auf, auch wenn points leer ist!
+        annotations.append({
+            'image_name': image_name, 
+            'width': int(image.get('width')),
+            'height': int(image.get('height')), 
+            'points': points
+        })
     return annotations
 
 def get_tiles_and_augment(img, points, tile_size=256, stride=128):
@@ -47,45 +48,66 @@ def get_tiles_and_augment(img, points, tile_size=256, stride=128):
     return tx, ty
 
 def prepare_training_data(xml_path, images_folder, output_folder='prepared_data', tile_size=256):
-    if not os.path.exists(output_folder): os.makedirs(output_folder)
+    # Unterordner für die einzelnen Kacheln erstellen
+    tiles_dir = os.path.join(output_folder, 'tiles')
+    if not os.path.exists(tiles_dir): 
+        os.makedirs(tiles_dir)
     
-    # XMLs laden
     annotations = []
     xml_files = glob.glob(os.path.join(xml_path, '*.xml')) if os.path.isdir(xml_path) else [xml_path]
-    for f in xml_files: annotations.extend(parse_annotations(f))
+    for f in xml_files: 
+        annotations.extend(parse_annotations(f))
 
-    X_list, Y_list = [], []
-    print(f"Starte Tiling für {len(annotations)} Bilder...")
+    tile_counter = 0
+    print(f"Starte RAM-schonendes Tiling mit 8-fach Augmentation für {len(annotations)} Bilder...")
 
     for ann in annotations:
         img_path = os.path.join(images_folder, ann['image_name'])
-        if not os.path.exists(img_path): continue
+        if not os.path.exists(img_path): 
+            continue
         
         img = ImageOps.exif_transpose(Image.open(img_path)).convert("RGB")
         
-        # --- NEU: Sicherheits-Skalierung auf max 2000px ---
+        # Sicherheits-Skalierung auf max 2000px (wie in deinem aktuellen Setup)
         max_dim = 2000
         w, h = img.size
+        scale = 1.0
         if max(w, h) > max_dim:
             scale = max_dim / max(w, h)
-            new_w, new_h = int(w * scale), int(h * scale)
-            img = img.resize((new_w, new_h), Image.BILINEAR)
-            # Punkte müssen im gleichen Verhältnis skaliert werden!
-            points = [(p[0] * scale, p[1] * scale) for p in ann['points']]
-        else:
-            points = ann['points']
-        # ------------------------------------------------
+            img = img.resize((int(w * scale), int(h * scale)), Image.BILINEAR)
         
-        tx, ty = get_tiles_and_augment(img, points, tile_size=tile_size)
-        X_list.extend(tx)
-        Y_list.extend(ty)
-        print(f"  - {ann['image_name']}: {len(tx)} Kacheln (skaliert).")
+        points = [(p[0] * scale, p[1] * scale) for p in ann['points']]
+        img_np = np.array(img, dtype=np.float32) / 255.0
+        
+        # Erzeuge die Dichtekarte (Sigma 8 für bessere Lernbarkeit bei 2000px)
+        full_density = generate_density_map(points, img.height, img.width, sigma=8)
 
-    print("Konvertiere in Arrays... (hier crasht es oft bei RAM-Mangel)")
-    X = np.array(X_list, dtype=np.float32)
-    Y = np.expand_dims(np.array(Y_list, dtype=np.float32), axis=-1)
-    
-    np.save(os.path.join(output_folder, 'X_train.npy'), X)
-    np.save(os.path.join(output_folder, 'Y_train.npy'), Y)
-    print(f"Erfolgreich! {len(X)} Kacheln gespeichert.")
-    return X, Y
+        # Tiling mit Überlappung (Stride 128 bei 256er Kacheln)
+        stride = 128
+        for y in range(0, img.height - tile_size + 1, stride):
+            for x in range(0, img.width - tile_size + 1, stride):
+                tile_img = img_np[y:y+tile_size, x:x+tile_size]
+                tile_dens = full_density[y:y+tile_size, x:x+tile_size]
+                
+                has_bees = np.sum(tile_dens) > 0.05
+
+                # Nur Kacheln mit Inhalt verarbeiten
+                if has_bees or (np.random.random() < 0.05):
+                    for k in range(4):
+                        rot_img = np.rot90(tile_img, k=k)
+                        rot_dens = np.rot90(tile_dens, k=k)
+                        
+                        # 1. Rotierte Version speichern
+                        np.save(os.path.join(tiles_dir, f"x_{tile_counter}.npy"), rot_img)
+                        np.save(os.path.join(tiles_dir, f"y_{tile_counter}.npy"), rot_dens)
+                        tile_counter += 1
+                        
+                        # 2. Zusätzlich gespiegelte Version der Rotation speichern (Horizontaler Flip)
+                        np.save(os.path.join(tiles_dir, f"x_{tile_counter}.npy"), np.flip(rot_img, axis=1))
+                        np.save(os.path.join(tiles_dir, f"y_{tile_counter}.npy"), np.flip(rot_dens, axis=1))
+                        tile_counter += 1
+        
+        print(f"  - {ann['image_name']} verarbeitet. Kacheln gesamt: {tile_counter}")
+
+    print(f"\n✓ Fertig! {tile_counter} Kacheln (inkl. 8-fach Augmentation) in {tiles_dir} gespeichert.")
+    return tile_counter
