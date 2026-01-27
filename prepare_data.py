@@ -80,7 +80,7 @@ def prepare_training_data(xml_path, images_folder, output_folder='prepared_data'
         img_np = np.array(img, dtype=np.float32) / 255.0
         
         # Erzeuge die Dichtekarte (Sigma 8 für bessere Lernbarkeit bei 2000px)
-        full_density = generate_density_map(points, img.height, img.width, sigma=8)
+        full_density = generate_density_map(points, img.height, img.width, sigma=4)
 
         # Tiling mit Überlappung (Stride 128 bei 256er Kacheln)
         stride = 128

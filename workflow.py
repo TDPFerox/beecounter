@@ -71,4 +71,4 @@ def run_complete_workflow(skip_prepare=False, continue_training=False, epochs=10
 
 if __name__ == "__main__":
     # Batch_size=4 ist sicher für deine RTX 4070 bei 256px Kacheln
-    run_complete_workflow(skip_prepare=False, continue_training=True, epochs=100, batch_size=32)
+    run_complete_workflow(skip_prepare=False, continue_training=False, epochs=100, batch_size=32)

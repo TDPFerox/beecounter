@@ -142,7 +142,10 @@ def train_model(continue_training, data_folder='prepared_data', epochs=50, batch
         validation_data=val_gen,
         epochs=epochs,
         callbacks=[early, check],
-        verbose=1
+        verbose=1,
+        workers=4,                # Nutzt 4 CPU-Kerne zum Laden der Daten
+        use_multiprocessing=True, # Erlaubt paralleles Laden
+        max_queue_size=10
     )
     
     model.save('final_model.keras')

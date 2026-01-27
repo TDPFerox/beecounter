@@ -25,34 +25,54 @@ def find_local_maxima(density_map, threshold=0.025, distance=15):
     maxima &= diff
     return np.argwhere(maxima)
 
-def process_image(img_path, model):
-    # Bild laden
+def process_image(img_path, model, batch_size=32):
+    # 1. Bild laden und skalieren (wie bisher)
     img_raw = ImageOps.exif_transpose(Image.open(img_path)).convert("RGB")
     scale = TARGET_DIM / max(img_raw.size)
     new_w, new_h = int(img_raw.size[0] * scale), int(img_raw.size[1] * scale)
     img_resized = img_raw.resize((new_w, new_h), Image.BILINEAR)
     
+    img_array = np.array(img_resized) / 255.0
     full_density_map = np.zeros((new_h, new_w))
     count_weights = np.zeros((new_h, new_w))
-    img_array = np.array(img_resized) / 255.0
+    
+    # Stride für Überlappung (128 bei 256er Kacheln)
     stride = TILE_SIZE // 2
     
-    # Vorhersage-Schleife
+    # Listen zum Sammeln der Kacheln und deren Positionen
+    tiles = []
+    tile_coords = []
+
+    # 2. Schritt: Kacheln extrahieren (nur CPU, sehr schnell)
     for y in range(0, new_h - TILE_SIZE + 1, stride):
         for x in range(0, new_w - TILE_SIZE + 1, stride):
             tile = img_array[y:y+TILE_SIZE, x:x+TILE_SIZE]
-            pred = model.predict(np.expand_dims(tile, axis=0), verbose=0)[0]
-            full_density_map[y:y+TILE_SIZE, x:x+TILE_SIZE] += pred.squeeze()
-            count_weights[y:y+TILE_SIZE, x:x+TILE_SIZE] += 1
+            tiles.append(tile)
+            tile_coords.append((y, x))
+    
+    # 3. Schritt: Batch-Vorhersage (GPU-Power nutzen!)
+    # Wir wandeln die Liste in ein großes NumPy-Array um
+    tiles_np = np.array(tiles)
+    
+    # model.predict mit batch_size jagt viele Kacheln gleichzeitig durch die GPU
+    # verbose=0 unterdrückt die Fortschrittsbalken pro Batch
+    predictions = model.predict(tiles_np, batch_size=batch_size, verbose=0)
+    
+    # 4. Schritt: Ergebnisse in die Map zurückschreiben
+    for i, (y, x) in enumerate(tile_coords):
+        pred = predictions[i].squeeze() # Entfernt überflüssige Dimensionen
+        full_density_map[y:y+TILE_SIZE, x:x+TILE_SIZE] += pred
+        count_weights[y:y+TILE_SIZE, x:x+TILE_SIZE] += 1
 
+    # Mittelwertbildung der Überlappungen und Nachbearbeitung
     full_density_map /= np.maximum(count_weights, 1)
-    full_density_map = gaussian_filter(full_density_map, sigma=0.8) # Glättung für Stabilität
+    full_density_map = gaussian_filter(full_density_map, sigma=0.8)
     
     math_sum = np.sum(full_density_map)
     bee_coords = find_local_maxima(full_density_map, threshold=THRESHOLD, distance=DISTANCE)
     bee_count = len(bee_coords)
     
-    # Ergebnisbild zeichnen
+    # Ergebnisbild zeichnen (wie bisher)
     draw = ImageDraw.Draw(img_resized)
     for coord in bee_coords:
         y, x = coord
