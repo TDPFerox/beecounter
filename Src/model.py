@@ -124,7 +124,7 @@ def train_model(continue_training, data_folder='Data/prepared_data', epochs=50, 
         
     # 3. Callbacks
     early = EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True)
-    check = ModelCheckpoint('best_model.keras', monitor='val_loss', save_best_only=True, verbose=1)
+    check = ModelCheckpoint('Model/best_model.keras', monitor='val_loss', save_best_only=True, verbose=1)
     
     # append=True sorgt dafür, dass die CSV bei Fortsetzung nicht gelöscht wird
     log_csv = CSVLogger(history_file, separator=',', append=continue_training)
