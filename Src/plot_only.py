@@ -7,11 +7,8 @@ def plot_from_csv(file_path='Metric/training_log.csv'):
         print(f"Fehler: {file_path} nicht gefunden.")
         return
 
-    # 1. Daten laden
     df = pd.read_csv(file_path)
     
-    # 2. ERSTE EPOCHE AUSLASSEN
-    # .iloc[1:] nimmt alle Zeilen ab Index 1 (also ab der 2. Zeile)
     df_plot = df.iloc[1:].copy()
     
     epochs = df_plot['epoch']

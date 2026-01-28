@@ -31,11 +31,9 @@ def combined_loss(y_true, y_pred, lambda_count=0.5):
     # 1. Density Loss (Punktgenauigkeit)
     density_loss = tf.reduce_mean(tf.abs(y_true - y_pred))
 
-    # 2. Count Loss (QUADRIERT für mehr Druck bei hohen Zahlen)
     true_count = tf.reduce_sum(y_true, axis=[1, 2, 3])
     pred_count = tf.reduce_sum(y_pred, axis=[1, 2, 3])
     
-    # MSE statt MAE beim Zähler
     count_loss_val = tf.reduce_mean(tf.square(true_count - pred_count))
 
     return density_loss + (lambda_count * count_loss_val)
@@ -98,9 +96,9 @@ class BeeDataGenerator(Sequence):
 
 def train_model(continue_training, data_folder='Data/prepared_data', epochs=50, batch_size=4):
     tiles_dir = os.path.join(data_folder, 'tiles')
-    history_file = 'Metric/training_log.csv' # Definition der Variable am Anfang der Funktion
+    history_file = 'Metric/training_log.csv'
     
-    # 1. Daten finden (wie bisher)
+    # 1. Daten finden 
     x_files = glob.glob(os.path.join(tiles_dir, 'x_*.npy'))
     num_tiles = len(x_files)
     if num_tiles == 0: return None, None
@@ -124,7 +122,7 @@ def train_model(continue_training, data_folder='Data/prepared_data', epochs=50, 
         model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
                      loss=combined_loss, metrics=["mae", count_loss])
         
-    # 3. Callbacks inkl. CSVLogger
+    # 3. Callbacks
     early = EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True)
     check = ModelCheckpoint('best_model.keras', monitor='val_loss', save_best_only=True, verbose=1)
     
@@ -155,7 +153,6 @@ def train_model(continue_training, data_folder='Data/prepared_data', epochs=50, 
     # 5. Gesamte History aus CSV laden für den Plot (Vervollständigung)
     if os.path.exists(history_file):
         full_df = pd.read_csv(history_file)
-        # Wir erstellen ein Fake-Objekt, damit plot_training_history() funktioniert
         class HistoryWrapper:
             def __init__(self, data_dict):
                 self.history = data_dict

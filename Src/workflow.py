@@ -14,7 +14,6 @@ def step1_prepare_training_data(xml_path='Data/annotations',
         return False
     
     try:
-        # NEU: Wir fangen nur die Anzahl der erzeugten Kacheln ab
         num_tiles = prepare_training_data(
             xml_path=xml_path,
             images_folder=images_folder,
@@ -45,7 +44,6 @@ def step2_train_model(continue_training, data_folder='Data/prepared_data', epoch
             batch_size=batch_size
         )
         
-        # NEU: Wenn das Training durchgelaufen ist, Charts erstellen
         if history:
             print("\nErstelle Trainings-Diagramme...")
             plot_training_history(history)
@@ -70,5 +68,4 @@ def run_complete_workflow(skip_prepare=False, continue_training=False, epochs=10
     print("\n✓ WORKFLOW ERFOLGREICH ABGESCHLOSSEN!")
 
 if __name__ == "__main__":
-    # Batch_size=4 ist sicher für deine RTX 4070 bei 256px Kacheln
     run_complete_workflow(skip_prepare=True, continue_training=False, epochs=100, batch_size=32)
