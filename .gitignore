@@ -1,7 +1,6 @@
 .venv
 Wabenbilder
-test
+annotations
 prepared_data
 __pycache__
 testbilder
-ergebnisse
