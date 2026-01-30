@@ -2,24 +2,33 @@ import os
 from prepare_data import prepare_training_data
 from model import train_model, plot_training_history
 
-def step1_prepare_training_data(xml_path='Data/annotations', 
-                                images_folder='Data/Wabenbilder',
-                                output_folder='Data/prepared_data'):
+def step1_prepare_training_data():
     print("=" * 60)
     print("STEP 1: Trainingsdaten vorbereiten (STREAMING-MODUS)")
     print("=" * 60)
+
+    base_images = 'Data/images'
+    base_xml = 'Data/annotations'
+    output = 'Data/prepared_data'
     
-    if not os.path.exists(xml_path):
-        print(f"Fehler: XML-Pfad nicht gefunden: {xml_path}")
+    if not os.path.exists(base_xml):
+        print(f"Fehler: XML-Pfad nicht gefunden: {base_xml}")
         return False
     
     try:
-        num_tiles = prepare_training_data(
-            xml_path=xml_path,
-            images_folder=images_folder,
-            output_folder=output_folder,
-            tile_size=256
-        )
+        num_tiles = prepare_training_data(base_xml, base_images, output, mode='train')
+        
+        if num_tiles > 0:
+            print(f"\n✓ Step 1 abgeschlossen: {num_tiles} Kacheln auf Festplatte gespeichert.\n")
+        else:
+            print("\n! Warnung: Es wurden keine gültigen Kacheln erzeugt.")
+            return False
+    except Exception as e:
+        print(f"Fehler bei der Datenvorbereitung: {e}")
+        return False
+    
+    try:
+        num_tiles = prepare_training_data(base_xml, base_images, output, mode='val')
         
         if num_tiles > 0:
             print(f"\n✓ Step 1 abgeschlossen: {num_tiles} Kacheln auf Festplatte gespeichert.\n")
@@ -30,6 +39,7 @@ def step1_prepare_training_data(xml_path='Data/annotations',
     except Exception as e:
         print(f"Fehler bei der Datenvorbereitung: {e}")
         return False
+    
 
 def step2_train_model(continue_training, data_folder='Data/prepared_data', epochs=100, batch_size=4):
     print("=" * 60)
@@ -37,7 +47,7 @@ def step2_train_model(continue_training, data_folder='Data/prepared_data', epoch
     print("=" * 60)
     
     try:
-        model, history = train_model(
+        history = train_model(
             continue_training,
             data_folder=data_folder,
             epochs=epochs,
@@ -68,4 +78,4 @@ def run_complete_workflow(skip_prepare=False, continue_training=False, epochs=10
     print("\n✓ WORKFLOW ERFOLGREICH ABGESCHLOSSEN!")
 
 if __name__ == "__main__":
-    run_complete_workflow(skip_prepare=True, continue_training=True, epochs=100, batch_size=32)
+    run_complete_workflow(skip_prepare=False, continue_training=True, epochs=100, batch_size=32)

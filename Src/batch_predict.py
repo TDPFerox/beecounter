@@ -3,22 +3,20 @@ import csv
 import numpy as np
 import tensorflow as tf
 from PIL import Image, ImageOps, ImageDraw
-from scipy.ndimage import maximum_filter, gaussian_filter
+from scipy.ndimage import gaussian_filter, maximum_filter
 from model import combined_loss, count_loss
 
 # --- KONFIGURATION ---
-MODEL_PATH = 'best_model.keras'
-SOURCE_FOLDER = 'testbilder'
-RESULT_FOLDER = 'ergebnisse'
-CSV_FILE = 'statistik_zaehlung.csv'
+MODEL_PATH = 'Model/best_model.keras'
+SOURCE_FOLDER = 'Data/testbilder'
+RESULT_FOLDER = 'Data/ergebnisse'
+CSV_FILE = 'Metric/statistik_zaehlung.csv'
 
-TARGET_DIM = 2000
 TILE_SIZE = 256
-# Deine kalibrierten Werte:
-THRESHOLD = 0.025
-DISTANCE = 15
+THRESHOLD = 0.012  # Leicht gesenkt, da das Modell vorsichtiger ist
+DISTANCE = 28     # Pixel-Abstand zwischen zwei Bienen-Maxima
 
-def find_local_maxima(density_map, threshold=0.025, distance=15):
+def find_local_maxima(density_map, threshold=THRESHOLD, distance=DISTANCE):
     data_max = maximum_filter(density_map, footprint=np.ones((distance, distance)))
     maxima = (density_map == data_max)
     diff = (density_map > threshold)
@@ -26,99 +24,95 @@ def find_local_maxima(density_map, threshold=0.025, distance=15):
     return np.argwhere(maxima)
 
 def process_image(img_path, model, batch_size=32):
-    # 1. Bild laden und skalieren (wie bisher)
+    # 1. Bild laden und EXIF-Rotation fixen
     img_raw = ImageOps.exif_transpose(Image.open(img_path)).convert("RGB")
-    scale = TARGET_DIM / max(img_raw.size)
-    new_w, new_h = int(img_raw.size[0] * scale), int(img_raw.size[1] * scale)
+    orig_w, orig_h = img_raw.size
+    
+    # 2. SKALIERUNG AUF 2000PX (Synchron zum Training!)
+    max_dim = 2000
+    scale = max_dim / max(orig_w, orig_h) if max(orig_w, orig_h) > max_dim else 1.0
+    new_w, new_h = int(orig_w * scale), int(orig_h * scale)
     img_resized = img_raw.resize((new_w, new_h), Image.BILINEAR)
     
     img_array = np.array(img_resized) / 255.0
-    full_density_map = np.zeros((new_h, new_w))
-    count_weights = np.zeros((new_h, new_w))
+    h, w, _ = img_array.shape
     
-    # Stride für Überlappung (128 bei 256er Kacheln)
-    stride = TILE_SIZE // 2
+    density_map = np.zeros((h, w), dtype=np.float32)
     
-    # Listen zum Sammeln der Kacheln und deren Positionen
+    # 3. Kacheln extrahieren
     tiles = []
-    tile_coords = []
-
-    # 2. Schritt: Kacheln extrahieren (nur CPU, sehr schnell)
-    for y in range(0, new_h - TILE_SIZE + 1, stride):
-        for x in range(0, new_w - TILE_SIZE + 1, stride):
+    coords = []
+    stride = 200 
+    for y in range(0, h - TILE_SIZE + 1, stride):
+        for x in range(0, w - TILE_SIZE + 1, stride):
             tile = img_array[y:y+TILE_SIZE, x:x+TILE_SIZE]
             tiles.append(tile)
-            tile_coords.append((y, x))
+            coords.append((x, y))
+            
+    # 4. Batch-Vorhersage
+    tiles = np.array(tiles)
+    predictions = model.predict(tiles, batch_size=batch_size, verbose=0)
     
-    # 3. Schritt: Batch-Vorhersage (GPU-Power nutzen!)
-    # Wir wandeln die Liste in ein großes NumPy-Array um
-    tiles_np = np.array(tiles)
+    # 5. Dichtekarte zusammensetzen
+    count_map = np.zeros((h, w), dtype=np.float32)
+    for i, (x, y) in enumerate(coords):
+        pred_tile = predictions[i, :, :, 0]
+        density_map[y:y+TILE_SIZE, x:x+TILE_SIZE] += pred_tile
+        count_map[y:y+TILE_SIZE, x:x+TILE_SIZE] += 1.0
+        
+    density_map = np.divide(density_map, count_map, out=np.zeros_like(density_map), where=count_map!=0)
     
-    # model.predict mit batch_size jagt viele Kacheln gleichzeitig durch die GPU
-    # verbose=0 unterdrückt die Fortschrittsbalken pro Batch
-    predictions = model.predict(tiles_np, batch_size=batch_size, verbose=0)
+    # --- FINALE FEINJUSTIERUNG ---
     
-    # 4. Schritt: Ergebnisse in die Map zurückschreiben
-    for i, (y, x) in enumerate(tile_coords):
-        pred = predictions[i].squeeze() # Entfernt überflüssige Dimensionen
-        full_density_map[y:y+TILE_SIZE, x:x+TILE_SIZE] += pred
-        count_weights[y:y+TILE_SIZE, x:x+TILE_SIZE] += 1
-
-    # Mittelwertbildung der Überlappungen und Nachbearbeitung
-    full_density_map /= np.maximum(count_weights, 1)
-    full_density_map = gaussian_filter(full_density_map, sigma=0.8)
+    # 1. Glättung bleibt bei 1.1 (guter Kompromiss)
+    smoothed_map = gaussian_filter(density_map, sigma=1.55)
     
-    math_sum = np.sum(full_density_map)
-    bee_coords = find_local_maxima(full_density_map, threshold=THRESHOLD, distance=DISTANCE)
-    bee_count = len(bee_coords)
+    # 2. KEIN fester Faktor mehr! Wir nehmen die Original-Dichte
+    math_sum = np.sum(density_map) 
     
-    # Ergebnisbild zeichnen (wie bisher)
+    # 3. Intelligente Punktsuche
+    # Wir nehmen einen sehr niedrigen Threshold, aber eine größere DISTANCE
+    # DISTANCE=25 verhindert, dass Kopf und Hinterleib separat gezählt werden.
+    # Das wird IMG_3579 wieder Richtung 450 drücken.
+    points = find_local_maxima(smoothed_map, threshold=THRESHOLD, distance=DISTANCE)
+    bee_count = len(points)
+    
+    # 7. Ergebnis-Bild erstellen
     draw = ImageDraw.Draw(img_resized)
-    for coord in bee_coords:
-        y, x = coord
-        draw.ellipse([x-3, y-3, x+3, y+3], fill='red', outline='white')
-    
+    for p in points:
+        ry, rx = p
+        draw.ellipse([rx-4, ry-4, rx+4, ry+4], fill='red', outline='white')
+        
     return img_resized, math_sum, bee_count
+
 
 def main():
     if not os.path.exists(RESULT_FOLDER):
         os.makedirs(RESULT_FOLDER)
+    if not os.path.exists(os.path.dirname(CSV_FILE)):
+        os.makedirs(os.path.dirname(CSV_FILE))
         
     custom_dict = {'combined_loss': combined_loss, 'count_loss': count_loss}
     print("Lade Modell...")
-    model = tf.keras.models.load_model(MODEL_PATH, custom_objects=custom_dict)
+    model = tf.keras.models.load_model(MODEL_PATH, custom_objects=custom_dict, compile=False)
     
     files = [f for f in os.listdir(SOURCE_FOLDER) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
     print(f"Gefundene Bilder: {len(files)}")
     
     with open(CSV_FILE, mode='w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['Dateiname', 'Mathe_Summe', 'Gezaehlte_Bienen', 'Differenz_Prozent'])
+        writer.writerow(['Dateiname', 'Mathe_Summe', 'Gezaehlte_Bienen'])
         
         for filename in files:
-            print(f"Verarbeite {filename}...")
             img_path = os.path.join(SOURCE_FOLDER, filename)
-            res_img, m_sum, b_count = process_image(img_path, model)
-            
-            # Prozentualen Unterschied berechnen
-            # (Gezählt - Mathe_Summe) / Mathe_Summe * 100
-            if m_sum > 0:
-                diff_pct = ((b_count - m_sum) / m_sum) * 100
-            else:
-                diff_pct = 0
-            
-            # Speichern
-            res_img.save(os.path.join(RESULT_FOLDER, f"result_{filename}"))
-            
-            # In CSV schreiben
-            writer.writerow([
-                filename, 
-                round(m_sum, 2), 
-                b_count, 
-                f"{round(diff_pct, 2)}%"
-            ])
-            
-            print(f"  -> Gefunden: {b_count} (Summe: {round(m_sum, 1)} | Abweichung: {round(diff_pct, 1)}%)")
+            try:
+                res_img, m_sum, b_count = process_image(img_path, model)
+                print(f"-> {filename}: Summe={m_sum:.1f}, Punkte={b_count}")
+                
+                res_img.save(os.path.join(RESULT_FOLDER, f"result_{filename}"))
+                writer.writerow([filename, round(m_sum, 2), b_count])
+            except Exception as e:
+                print(f"Fehler bei {filename}: {e}")
 
     print(f"\nFertig! Statistiken in {CSV_FILE} gespeichert.")
 

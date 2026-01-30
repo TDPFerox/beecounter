@@ -27,7 +27,7 @@ def count_loss(y_true, y_pred):
     pred_count = tf.reduce_sum(y_pred, axis=[1, 2, 3])
     return tf.reduce_mean(tf.abs(true_count - pred_count))
 
-def combined_loss(y_true, y_pred, lambda_count=0.5):
+def combined_loss(y_true, y_pred, lambda_count=50.0):
     # 1. Density Loss (Punktgenauigkeit)
     density_loss = tf.reduce_mean(tf.abs(y_true - y_pred))
 
@@ -74,91 +74,106 @@ def build_bee_counter(input_shape=(None, None, 3)):
     return Model(inputs, output)
 
 class BeeDataGenerator(Sequence):
-    def __init__(self, tile_indices, tiles_dir, batch_size=4):
-        self.tile_indices = tile_indices
-        self.tiles_dir = tiles_dir
+    def __init__(self, file_list, batch_size=4, shuffle=False):
+        self.file_list = file_list # Liste der vollen Pfade zu den x_*.npy Dateien
         self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.on_epoch_end()
 
     def __len__(self):
-        return int(np.floor(len(self.tile_indices) / self.batch_size))
+        return int(np.floor(len(self.file_list) / self.batch_size))
+
+    def on_epoch_end(self):
+        # Wichtig für das Training: Nach jeder Epoche neu mischen
+        if self.shuffle:
+            np.random.shuffle(self.file_list)
 
     def __getitem__(self, index):
-        indices = self.tile_indices[index*self.batch_size:(index+1)*self.batch_size]
+        batch_files = self.file_list[index*self.batch_size : (index+1)*self.batch_size]
         X, Y = [], []
         
-        for idx in indices:
-            X.append(np.load(os.path.join(self.tiles_dir, f"x_{idx}.npy")))
-            y_data = np.load(os.path.join(self.tiles_dir, f"y_{idx}.npy"))
+        for x_path in batch_files:
+            # Lade X (Bildkachel)
+            X.append(np.load(x_path))
+            
+            # Pfad für Y (Dichtekarte) ableiten: x_0.npy -> y_0.npy im selben Ordner
+            y_path = x_path.replace('x_', 'y_')
+            y_data = np.load(y_path)
             Y.append(np.expand_dims(y_data, axis=-1))
             
         return np.array(X), np.array(Y)
 
 
 def train_model(continue_training, data_folder='Data/prepared_data', epochs=50, batch_size=4):
-    tiles_dir = os.path.join(data_folder, 'tiles')
+    # Pfade zu den neuen Unterordnern
+    train_dir = os.path.join(data_folder, 'train')
+    val_dir = os.path.join(data_folder, 'val')
     history_file = 'Metric/training_log.csv'
     
-    # 1. Daten finden 
-    x_files = glob.glob(os.path.join(tiles_dir, 'x_*.npy'))
-    num_tiles = len(x_files)
-    if num_tiles == 0: return None, None
+    # 1. Daten direkt aus den Ordnern laden
+    train_files = glob.glob(os.path.join(train_dir, 'x_*.npy'))
+    val_files = glob.glob(os.path.join(val_dir, 'x_*.npy'))
+    
+    if not train_files:
+        print(f"Fehler: Keine Trainingsdaten in {train_dir} gefunden!")
+        return None, None
 
-    indices = np.arange(num_tiles)
-    np.random.shuffle(indices)
-    split = int(0.8 * num_tiles)
-    train_idx, val_idx = indices[:split], indices[split:]
+    # Generatoren initialisieren
+    # Training: shuffle=True | Validierung: shuffle=False
+    train_gen = BeeDataGenerator(train_files, batch_size, shuffle=True)
+    val_gen = BeeDataGenerator(val_files, batch_size, shuffle=False)
     
-    train_gen = BeeDataGenerator(train_idx, tiles_dir, batch_size)
-    val_gen = BeeDataGenerator(val_idx, tiles_dir, batch_size)
-    
-    # 2. Modell laden oder bauen
+    print(f"Training mit {len(train_files)} Kacheln")
+    print(f"Validierung mit {len(val_files)} Kacheln")
+
+    # 2. Modell laden oder bauen (bleibt fast gleich)
     if continue_training and os.path.exists('Model/best_model.keras'):
         print("Lade existierendes Modell...")
         model = tf.keras.models.load_model('Model/best_model.keras', 
-                custom_objects={'combined_loss': combined_loss, 'count_loss': count_loss})
+                custom_objects={'combined_loss': combined_loss, 'count_loss': count_loss},
+                compile=False)
+        
+        # Mit niedriger Lernrate für Fine-Tuning neu kompilieren
+        model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=5e-5),
+                    loss=combined_loss, metrics=["mae", count_loss])
     else:
         print("Baue neues Modell...")
         model = build_bee_counter()
         model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
-                     loss=combined_loss, metrics=["mae", count_loss])
+                    loss=combined_loss, metrics=["mae", count_loss])
         
-    # 3. Callbacks
-    early = EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True)
+    # 3. Callbacks (bleiben gleich)
+    early = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
     check = ModelCheckpoint('Model/best_model.keras', monitor='val_loss', save_best_only=True, verbose=1)
-    
-    # append=True sorgt dafür, dass die CSV bei Fortsetzung nicht gelöscht wird
+    reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=4, min_lr=1e-6, verbose=1)
     log_csv = CSVLogger(history_file, separator=',', append=continue_training)
     
-    # Training
+    # 4. Training starten
     initial_epoch = 0
     if continue_training and os.path.exists(history_file):
         try:
             existing_history = pd.read_csv(history_file)
             if not existing_history.empty:
-                # Die neue Epoche ist die letzte vorhandene + 1
                 initial_epoch = int(existing_history['epoch'].max()) + 1
                 print(f"Setze Training fort bei Epoche {initial_epoch}...")
         except Exception as e:
-            print(f"Konnte History nicht lesen, starte bei 0: {e}")
+            print(f"Konnte History nicht lesen: {e}")
 
     history = model.fit(
         train_gen,
         validation_data=val_gen,
         epochs=epochs,
         initial_epoch=initial_epoch,
-        callbacks=[early, check, log_csv],
+        callbacks=[early, check, log_csv, reduce_lr],
         verbose=1
     )
     
-    # 5. Gesamte History aus CSV laden für den Plot (Vervollständigung)
+    # 5. Rückgabe (bleibt gleich)
     if os.path.exists(history_file):
         full_df = pd.read_csv(history_file)
         class HistoryWrapper:
-            def __init__(self, data_dict):
-                self.history = data_dict
-        
-        complete_history = HistoryWrapper(full_df.to_dict(orient='list'))
-        return model, complete_history
+            def __init__(self, data_dict): self.history = data_dict
+        return model, HistoryWrapper(full_df.to_dict(orient='list'))
     
     return model, history
 
