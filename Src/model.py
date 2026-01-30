@@ -1,7 +1,6 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-import tensorflow as tf
 from tensorflow.keras.layers import (
     Input, Conv2D, MaxPooling2D,
     UpSampling2D, Concatenate
@@ -11,6 +10,26 @@ from tensorflow.keras.callbacks import (EarlyStopping, ModelCheckpoint, CSVLogge
 from tensorflow.keras.utils import Sequence
 import glob
 import pandas as pd
+
+# In model.py ganz oben einfügen
+import tensorflow as tf
+
+# GPU Speicher-Management
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    try:
+        # Begrenze TF auf 8GB von deinen 12GB (lässt Platz für Windows/WSL)
+        tf.config.set_logical_device_configuration(
+            gpus[0],
+            [tf.config.LogicalDeviceConfiguration(memory_limit=7168)]
+        )
+        # Verhindert, dass TF sofort alles reserviert
+        # tf.config.experimental.set_memory_growth(gpus[0], True) 
+    except RuntimeError as e:
+        print(e)
+
+# XLA deaktivieren (verhindert die langen Kompilierungs-Hänger)
+tf.config.optimizer.set_jit(True)
 
 def conv_block(x, filters):
     x = Conv2D(filters, 3, padding="same", activation="relu")(x)
@@ -38,6 +57,28 @@ def combined_loss(y_true, y_pred, lambda_count=50.0):
 
     return density_loss + (lambda_count * count_loss_val)
 
+# NEU: Ein Block, der "weiter" sieht, ohne mehr RAM zu brauchen
+def dilated_conv_block(x, filters):
+    # dilation_rate=2 und 4 lässt den Filter "Lücken" springen
+    x = Conv2D(filters, 3, padding="same", activation="relu", dilation_rate=2)(x)
+    x = Conv2D(filters, 3, padding="same", activation="relu", dilation_rate=4)(x)
+    return x
+
+# NEU: Bestraft Abweichungen in der Gesamtsumme härter
+def weighted_total_loss(y_true, y_pred):
+    # 1. Pixel-Fehler (Sorgt dafür, dass die Punkte an der richtigen Stelle sind)
+    pixel_loss = tf.reduce_mean(tf.square(y_true - y_pred))
+    
+    # 2. Summen-Fehler (Sorgt dafür, dass die Gesamtzahl stimmt)
+    true_count = tf.reduce_sum(y_true, axis=[1, 2, 3])
+    pred_count = tf.reduce_sum(y_pred, axis=[1, 2, 3])
+    # Wir nehmen das Quadrat, damit große Abweichungen (wie 200 Bienen) extrem weh tun
+    c_loss = tf.reduce_mean(tf.square(true_count - pred_count))
+    
+    # 3. Kombination
+    # Wir gewichten den c_loss mit 0.001. 
+    # Ohne Gewichtung würde der c_loss den pixel_loss einfach "erdrücken".
+    return pixel_loss + (0.001 * c_loss)
 
 def build_bee_counter(input_shape=(None, None, 3)):
     inputs = Input(shape=input_shape)
@@ -53,7 +94,7 @@ def build_bee_counter(input_shape=(None, None, 3)):
     p3 = MaxPooling2D()(c3)
 
     # Bottleneck
-    b = conv_block(p3, 256)
+    b = dilated_conv_block(p3, 512)
 
     # Decoder
     u3 = UpSampling2D()(b)
@@ -126,24 +167,30 @@ def train_model(continue_training, data_folder='Data/prepared_data', epochs=50, 
     print(f"Training mit {len(train_files)} Kacheln")
     print(f"Validierung mit {len(val_files)} Kacheln")
 
-    # 2. Modell laden oder bauen (bleibt fast gleich)
+    # 2. Modell laden oder bauen
     if continue_training and os.path.exists('Model/best_model.keras'):
         print("Lade existierendes Modell...")
+        # Hier fügen wir 'weighted_total_loss' zu den custom_objects hinzu
         model = tf.keras.models.load_model('Model/best_model.keras', 
-                custom_objects={'combined_loss': combined_loss, 'count_loss': count_loss},
+                custom_objects={
+                    'combined_loss': combined_loss, 
+                    'weighted_total_loss': weighted_total_loss, # Hinzufügen
+                    'count_loss': count_loss
+                },
                 compile=False)
         
-        # Mit niedriger Lernrate für Fine-Tuning neu kompilieren
+        # WICHTIG: Hier die neue Loss-Funktion einsetzen!
         model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=5e-5),
-                    loss=combined_loss, metrics=["mae", count_loss])
+                    loss=weighted_total_loss, metrics=["mae", count_loss])
     else:
         print("Baue neues Modell...")
         model = build_bee_counter()
+        # WICHTIG: Auch hier die neue Loss-Funktion einsetzen!
         model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
-                    loss=combined_loss, metrics=["mae", count_loss])
+                    loss=weighted_total_loss, metrics=["mae", count_loss])
         
     # 3. Callbacks (bleiben gleich)
-    early = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+    early = EarlyStopping(monitor='val_loss', patience=20, restore_best_weights=True)
     check = ModelCheckpoint('Model/best_model.keras', monitor='val_loss', save_best_only=True, verbose=1)
     reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=4, min_lr=1e-6, verbose=1)
     log_csv = CSVLogger(history_file, separator=',', append=continue_training)
@@ -159,13 +206,16 @@ def train_model(continue_training, data_folder='Data/prepared_data', epochs=50, 
         except Exception as e:
             print(f"Konnte History nicht lesen: {e}")
 
+    # In model.py innerhalb von train_model()
     history = model.fit(
         train_gen,
         validation_data=val_gen,
+        steps_per_epoch=250,  # Wichtig für kleine Speicher-Häppchen
         epochs=epochs,
         initial_epoch=initial_epoch,
         callbacks=[early, check, log_csv, reduce_lr],
         verbose=1
+        # 'workers' und 'use_multiprocessing' wurden entfernt
     )
     
     # 5. Rückgabe (bleibt gleich)

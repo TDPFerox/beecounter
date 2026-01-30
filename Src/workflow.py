@@ -78,4 +78,4 @@ def run_complete_workflow(skip_prepare=False, continue_training=False, epochs=10
     print("\n✓ WORKFLOW ERFOLGREICH ABGESCHLOSSEN!")
 
 if __name__ == "__main__":
-    run_complete_workflow(skip_prepare=False, continue_training=True, epochs=100, batch_size=32)
+    run_complete_workflow(skip_prepare=True, continue_training=True, epochs=1000, batch_size=2)

@@ -57,7 +57,7 @@ def prepare_training_data(xml_path, images_folder, output_folder, mode='train', 
         points = [(p[0] * scale, p[1] * scale) for p in ann['points']]
         # Wir behalten das Original-Bild-Array für die Augmentation
         img_np_orig = np.array(img) 
-        full_density = generate_density_map(points, img.height, img.width, sigma=3)
+        full_density = generate_density_map(points, img.height, img.width, sigma=2.5)
 
         is_empty = len(points) == 0
         # Kleinerer Stride bei vollen Bildern im Training, um mehr Kacheln zu generieren
