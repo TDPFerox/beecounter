@@ -28,8 +28,8 @@ if gpus:
     except RuntimeError as e:
         print(e)
 
-# XLA deaktivieren (verhindert die langen Kompilierungs-Hänger)
-tf.config.optimizer.set_jit(True)
+# # XLA deaktivieren (verhindert die langen Kompilierungs-Hänger)
+tf.config.optimizer.set_jit(False)
 
 def conv_block(x, filters):
     x = Conv2D(filters, 3, padding="same", activation="relu")(x)
@@ -57,57 +57,57 @@ def combined_loss(y_true, y_pred, lambda_count=50.0):
 
     return density_loss + (lambda_count * count_loss_val)
 
-# NEU: Ein Block, der "weiter" sieht, ohne mehr RAM zu brauchen
-def dilated_conv_block(x, filters):
-    # dilation_rate=2 und 4 lässt den Filter "Lücken" springen
-    x = Conv2D(filters, 3, padding="same", activation="relu", dilation_rate=2)(x)
-    x = Conv2D(filters, 3, padding="same", activation="relu", dilation_rate=4)(x)
-    return x
-
-# NEU: Bestraft Abweichungen in der Gesamtsumme härter
-def weighted_total_loss(y_true, y_pred):
-    # 1. Pixel-Fehler (Sorgt dafür, dass die Punkte an der richtigen Stelle sind)
-    pixel_loss = tf.reduce_mean(tf.square(y_true - y_pred))
+def aspp_block(x, filters):
+    """ Atrous Spatial Pyramid Pooling - Extrahiert Merkmale in verschiedenen Dichten """
+    # 1. Lokal (1x1)
+    d1 = Conv2D(filters // 4, 1, padding="same", activation="relu")(x)
+    # 2. Nahbereich (Dilation 1)
+    d2 = Conv2D(filters // 4, 3, padding="same", activation="relu", dilation_rate=1)(x)
+    # 3. Mittlere Dichte (Dilation 2)
+    d3 = Conv2D(filters // 4, 3, padding="same", activation="relu", dilation_rate=2)(x)
+    # 4. Weitblick für Klumpen (Dilation 4)
+    d4 = Conv2D(filters // 4, 3, padding="same", activation="relu", dilation_rate=4)(x)
     
-    # 2. Summen-Fehler (Sorgt dafür, dass die Gesamtzahl stimmt)
+    out = Concatenate()([d1, d2, d3, d4])
+    return Conv2D(filters, 1, padding="same", activation="relu")(out)
+
+def weighted_total_loss(y_true, y_pred):
+    pixel_loss = tf.reduce_mean(tf.square(y_true - y_pred))
     true_count = tf.reduce_sum(y_true, axis=[1, 2, 3])
     pred_count = tf.reduce_sum(y_pred, axis=[1, 2, 3])
-    # Wir nehmen das Quadrat, damit große Abweichungen (wie 200 Bienen) extrem weh tun
+    # Erhöhte Gewichtung: 0.008 statt 0.001 zwingt das Modell zur Summen-Treue
     c_loss = tf.reduce_mean(tf.square(true_count - pred_count))
-    
-    # 3. Kombination
-    # Wir gewichten den c_loss mit 0.001. 
-    # Ohne Gewichtung würde der c_loss den pixel_loss einfach "erdrücken".
-    return pixel_loss + (0.001 * c_loss)
+    return pixel_loss + (0.008 * c_loss)
 
 def build_bee_counter(input_shape=(None, None, 3)):
     inputs = Input(shape=input_shape)
 
-    # Encoder
+    # Encoder (Abwärtspfad)
     c1 = conv_block(inputs, 32)
-    p1 = MaxPooling2D()(c1)
+    p1 = MaxPooling2D()(c1) # -> 128x128
 
     c2 = conv_block(p1, 64)
-    p2 = MaxPooling2D()(c2)
+    p2 = MaxPooling2D()(c2) # -> 64x64
 
     c3 = conv_block(p2, 128)
-    p3 = MaxPooling2D()(c3)
+    p3 = MaxPooling2D()(c3) # -> 32x32 (Tiefster Punkt)
 
-    # Bottleneck
-    b = dilated_conv_block(p3, 512)
+    # Bottleneck: ASPP sitzt jetzt ganz unten bei p3
+    # Wir erhöhen hier die Filter auf 256 für mehr "Denkkapazität"
+    b = aspp_block(p3, 256) 
 
-    # Decoder
-    u3 = UpSampling2D()(b)
-    u3 = Concatenate()([u3, c3])
-    c4 = conv_block(u3, 128)
+    # Decoder (Aufwärtspfad)
+    u3 = UpSampling2D()(b) # -> 64x64
+    m3 = Concatenate()([u3, c3]) # Passt! Beide 64x64
+    c4 = conv_block(m3, 128)
 
-    u2 = UpSampling2D()(c4)
-    u2 = Concatenate()([u2, c2])
-    c5 = conv_block(u2, 64)
+    u2 = UpSampling2D()(c4) # -> 128x128
+    m2 = Concatenate()([u2, c2]) # Passt! Beide 128x128
+    c5 = conv_block(m2, 64)
 
-    u1 = UpSampling2D()(c5)
-    u1 = Concatenate()([u1, c1])
-    c6 = conv_block(u1, 32)
+    u1 = UpSampling2D()(c5) # -> 256x256
+    m1 = Concatenate()([u1, c1]) # Passt! Beide 256x256
+    c6 = conv_block(m1, 32)
 
     # Output: Dichtekarte
     output = Conv2D(1, 1, activation="relu")(c6)
@@ -190,7 +190,7 @@ def train_model(continue_training, data_folder='Data/prepared_data', epochs=50, 
                     loss=weighted_total_loss, metrics=["mae", count_loss])
         
     # 3. Callbacks (bleiben gleich)
-    early = EarlyStopping(monitor='val_loss', patience=20, restore_best_weights=True)
+    early = EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True)
     check = ModelCheckpoint('Model/best_model.keras', monitor='val_loss', save_best_only=True, verbose=1)
     reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=4, min_lr=1e-6, verbose=1)
     log_csv = CSVLogger(history_file, separator=',', append=continue_training)
@@ -210,7 +210,6 @@ def train_model(continue_training, data_folder='Data/prepared_data', epochs=50, 
     history = model.fit(
         train_gen,
         validation_data=val_gen,
-        steps_per_epoch=250,  # Wichtig für kleine Speicher-Häppchen
         epochs=epochs,
         initial_epoch=initial_epoch,
         callbacks=[early, check, log_csv, reduce_lr],
