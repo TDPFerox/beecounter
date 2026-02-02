@@ -62,7 +62,7 @@ def prepare_training_data(xml_path, images_folder, output_folder, mode='train', 
         is_empty = len(points) == 0
         # Kleinerer Stride bei vollen Bildern im Training, um mehr Kacheln zu generieren
         stride = 64 if (len(points) > 400 and mode == 'train') else 128
-        empty_prob = 1.0 if (is_empty and mode == 'train') else 0.05
+        empty_prob = 1.0 if (is_empty and mode == 'train') else 0.25
 
         for y in range(0, img.height - tile_size + 1, stride):
             for x in range(0, img.width - tile_size + 1, stride):

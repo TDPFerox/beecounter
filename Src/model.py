@@ -72,12 +72,21 @@ def aspp_block(x, filters):
     return Conv2D(filters, 1, padding="same", activation="relu")(out)
 
 def weighted_total_loss(y_true, y_pred):
+    # Pixel-Loss
     pixel_loss = tf.reduce_mean(tf.square(y_true - y_pred))
+
     true_count = tf.reduce_sum(y_true, axis=[1, 2, 3])
     pred_count = tf.reduce_sum(y_pred, axis=[1, 2, 3])
-    # Erhöhte Gewichtung: 0.008 statt 0.001 zwingt das Modell zur Summen-Treue
-    c_loss = tf.reduce_mean(tf.square(true_count - pred_count))
-    return pixel_loss + (0.008 * c_loss)
+
+    # Relative Count Loss (prozentual)
+    eps = 1.0
+    rel_err = tf.abs(pred_count - true_count) / (true_count + eps)
+
+    # Robust machen (Huber statt pur L1)
+    rel_count_loss = tf.reduce_mean(tf.where(rel_err < 0.1, 0.5 * tf.square(rel_err), 0.1 * (rel_err - 0.05)))
+
+    return pixel_loss + 5.0 * rel_count_loss
+
 
 def build_bee_counter(input_shape=(None, None, 3)):
     inputs = Input(shape=input_shape)
