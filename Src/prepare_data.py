@@ -131,7 +131,7 @@ def prepare_training_data(xml_path, images_folder, output_folder, mode='train', 
                                 aug_img = np.flip(aug_img, axis=1)
                                 aug_dens = np.flip(aug_dens, axis=1)
 
-                        # Speichern
+                        # Speichern<re
                         np.save(os.path.join(target_dir, f"x_{tile_counter}.npy"), aug_img)
                         np.save(os.path.join(target_dir, f"y_{tile_counter}.npy"), aug_dens)
                         tile_counter += 1

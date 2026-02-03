@@ -46,17 +46,6 @@ def count_loss(y_true, y_pred):
     pred_count = tf.reduce_sum(y_pred, axis=[1, 2, 3])
     return tf.reduce_mean(tf.abs(true_count - pred_count))
 
-def combined_loss(y_true, y_pred, lambda_count=50.0):
-    # 1. Density Loss (Punktgenauigkeit)
-    density_loss = tf.reduce_mean(tf.abs(y_true - y_pred))
-
-    true_count = tf.reduce_sum(y_true, axis=[1, 2, 3])
-    pred_count = tf.reduce_sum(y_pred, axis=[1, 2, 3])
-    
-    count_loss_val = tf.reduce_mean(tf.square(true_count - pred_count))
-
-    return density_loss + (lambda_count * count_loss_val)
-
 def aspp_block(x, filters):
     """ Atrous Spatial Pyramid Pooling - Extrahiert Merkmale in verschiedenen Dichten """
     # 1. Lokal (1x1)
@@ -85,7 +74,13 @@ def weighted_total_loss(y_true, y_pred):
     # Robust machen (Huber statt pur L1)
     rel_count_loss = tf.reduce_mean(tf.where(rel_err < 0.1, 0.5 * tf.square(rel_err), 0.1 * (rel_err - 0.05)))
 
-    return pixel_loss + 5.0 * rel_count_loss
+    return pixel_loss + 20 * rel_count_loss
+
+def mape_count(y_true, y_pred):
+    true_count = tf.reduce_sum(y_true, axis=[1,2,3])
+    pred_count = tf.reduce_sum(y_pred, axis=[1,2,3])
+    eps = 1.0
+    return tf.reduce_mean(tf.abs(pred_count - true_count) / (true_count + eps))
 
 
 def build_bee_counter(input_shape=(None, None, 3)):
@@ -182,7 +177,6 @@ def train_model(continue_training, data_folder='Data/prepared_data', epochs=50, 
         # Hier fügen wir 'weighted_total_loss' zu den custom_objects hinzu
         model = tf.keras.models.load_model('Model/best_model.keras', 
                 custom_objects={
-                    'combined_loss': combined_loss, 
                     'weighted_total_loss': weighted_total_loss, # Hinzufügen
                     'count_loss': count_loss
                 },
@@ -190,18 +184,28 @@ def train_model(continue_training, data_folder='Data/prepared_data', epochs=50, 
         
         # WICHTIG: Hier die neue Loss-Funktion einsetzen!
         model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=5e-5),
-                    loss=weighted_total_loss, metrics=["mae", count_loss])
+                    loss=weighted_total_loss, metrics=["mae", count_loss, mape_count])
     else:
         print("Baue neues Modell...")
         model = build_bee_counter()
         # WICHTIG: Auch hier die neue Loss-Funktion einsetzen!
         model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
-                    loss=weighted_total_loss, metrics=["mae", count_loss])
-        
+                    loss=weighted_total_loss, metrics=["mae", count_loss, mape_count])
+
+    best_so_far = None
+    if continue_training and os.path.exists(history_file):
+        try:
+            dfh = pd.read_csv(history_file)
+            if 'val_count_loss' in dfh.columns and not dfh['val_count_loss'].dropna().empty:
+                best_so_far = float(dfh['val_count_loss'].min())
+                print(f"Bester val_count_loss bisher: {best_so_far}")
+        except Exception as e:
+            print("Konnte best_so_far nicht lesen:", e)
+
     # 3. Callbacks (bleiben gleich)
-    early = EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True)
-    check = ModelCheckpoint('Model/best_model.keras', monitor='val_loss', save_best_only=True, verbose=1)
-    reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=4, min_lr=1e-6, verbose=1)
+    early = EarlyStopping(monitor='val_count_loss', mode='min', patience=10, restore_best_weights=True)
+    check = ModelCheckpoint('Model/best_model.keras', monitor='val_count_loss', mode='min', save_best_only=True, verbose=1, initial_value_threshold=best_so_far)
+    reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_count_loss', mode='min', factor=0.5, patience=5, min_lr=1e-6, verbose=1)
     log_csv = CSVLogger(history_file, separator=',', append=continue_training)
     
     # 4. Training starten
@@ -312,18 +316,3 @@ def visualize_predictions(model, X_samples, Y_true, prefix=''):
     plt.savefig(filename, dpi=150)
     plt.close()
     print(f"Beispielvorhersagen gespeichert als '{filename}'")
-
-
-if __name__ == "__main__":
-    # Trainiere das Modell
-    model, history = train_model(
-        data_folder='Data/prepared_data',
-        epochs=50,
-        batch_size=4,
-        test_split=0.15,      # 15% für Test
-        validation_split=0.15  # 15% für Validation (=> 70% Training)
-    )
-    
-    if model:
-        print("\nTraining abgeschlossen!")
-        print("Verwende das Modell mit: model = tf.keras.models.load_model('best_model.keras')")
