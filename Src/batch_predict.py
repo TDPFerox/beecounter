@@ -5,7 +5,7 @@ import pandas as pd
 import re
 import tensorflow as tf
 from PIL import Image, ImageOps
-from model import combined_loss, count_loss, weighted_total_loss
+from model import count_loss, weighted_total_loss
 
 # --- KONFIGURATION ---
 MODEL_PATH = 'Model/best_model.keras'
@@ -158,7 +158,6 @@ def main():
     os.makedirs(os.path.dirname(CSV_FILE), exist_ok=True)
 
     custom_dict = {
-        'combined_loss': combined_loss,
         'weighted_total_loss': weighted_total_loss,
         'count_loss': count_loss
     }
@@ -211,10 +210,10 @@ def main():
     else:
         a, b = 1.0, 0.0
 
-    print(f"\nKalibrierung gelernt: GT ≈ {a:.6f} * Pred_raw + {b:.3f}")
+    print(f"\nKalibrierung gelernt: GT ≈ {a:.6f} * Pred_raw")
 
     # --- 3) Fehler berechnen (raw & calibrated) ---
-    df_valid["Pred_cal"] = a * df_valid["Pred_raw"] + b
+    df_valid["Pred_cal"] = a * df_valid["Pred_raw"]
 
     df_valid["AbsErr_raw"] = np.abs(df_valid["Pred_raw"] - df_valid["GT"])
     df_valid["RelErr_raw"] = df_valid["AbsErr_raw"] / df_valid["GT"].clip(lower=1)
