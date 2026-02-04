@@ -2,7 +2,7 @@ import os
 from prepare_data import prepare_training_data
 from model import train_model, plot_training_history
 
-def step1_prepare_training_data():
+def step1_prepare_training_data(num_workers=1):
     print("=" * 60)
     print("STEP 1: Trainingsdaten vorbereiten (STREAMING-MODUS)")
     print("=" * 60)
@@ -16,7 +16,7 @@ def step1_prepare_training_data():
         return False
     
     try:
-        num_tiles = prepare_training_data(base_xml, base_images, output, mode='train')
+        num_tiles = prepare_training_data(base_xml, base_images, output, mode='train', num_workers=num_workers)
         
         if num_tiles > 0:
             print(f"\n✓ Step 1 abgeschlossen: {num_tiles} Kacheln auf Festplatte gespeichert.\n")
@@ -28,7 +28,7 @@ def step1_prepare_training_data():
         return False
     
     try:
-        num_tiles = prepare_training_data(base_xml, base_images, output, mode='val')
+        num_tiles = prepare_training_data(base_xml, base_images, output, mode='val', num_workers=num_workers)
         
         if num_tiles > 0:
             print(f"\n✓ Step 1 abgeschlossen: {num_tiles} Kacheln auf Festplatte gespeichert.\n")
@@ -63,14 +63,14 @@ def step2_train_model(continue_training, data_folder='Data/prepared_data', epoch
         print(f"Fehler beim Training: {e}")
         return False
 
-def run_complete_workflow(skip_prepare=False, continue_training=False, epochs=100, batch_size=16):
+def run_complete_workflow(skip_prepare=False, continue_training=False, epochs=100, batch_size=16, num_workers=1):
     print("\n" + "=" * 60)
     print("BIENENZÄHLER - RAM-SCHONENDER WORKFLOW")
     print("=" * 60 + "\n")
     
     # 1. Daten vorbereiten (optional)
     if not skip_prepare:
-        if not step1_prepare_training_data(): return
+        if not step1_prepare_training_data(num_workers=num_workers): return
     
     # 2. Training starten
     if not step2_train_model(continue_training, epochs=epochs, batch_size=batch_size): return
@@ -78,4 +78,4 @@ def run_complete_workflow(skip_prepare=False, continue_training=False, epochs=10
     print("\n✓ WORKFLOW ERFOLGREICH ABGESCHLOSSEN!")
 
 if __name__ == "__main__":
-    run_complete_workflow(skip_prepare=True, continue_training=True, epochs=100, batch_size=16)
+    run_complete_workflow(skip_prepare=False, continue_training=False, epochs=100, batch_size=16, num_workers=6)
